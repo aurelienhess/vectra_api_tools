@@ -2,13 +2,12 @@ import json
 import requests
 import warnings
 
-# requests.packages.urllib3.disable_warnings()
 warnings.filterwarnings('always', '.*', PendingDeprecationWarning)
 
 
 def request_error_handler(func):
-    def request_handler(self, **kwargs):
-        response = func(self, **kwargs)
+    def request_handler(self, *args, **kwargs):
+        response = func(self, *args, **kwargs)
 
         if response.status_code in [200, 201, 204]:
             return response
@@ -68,6 +67,7 @@ class VectraClient(object):
         else:
             raise RuntimeError("At least one form of authentication is required. Please provide a token or username"
                                " and password")
+
     @validate_api_v2
     @request_error_handler
     def mark_detections_fixed(self, detection_ids=None):
@@ -133,6 +133,17 @@ class VectraClient(object):
                 transformed_list.append(host)
         return transformed_list
 
+    @validate_api_v2
+    @request_error_handler
+    def _get_request(self, url, **kwargs):
+        params = {}
+        for k, v in kwargs.items():
+            params[k] = v
+        if self.version == 2:
+            return requests.get(url, headers=self.headers, params=params, verify=self.verify)
+        else:
+            return requests.get(url, auth=self.auth, params=params, verify=self.verify)
+
     # TODO Consolidate get methods
     @request_error_handler
     def get_hosts(self, **kwargs):
@@ -180,9 +191,7 @@ class VectraClient(object):
         resp = self.get_hosts(**kwargs)
         yield resp
         while resp.json()['next']:
-            url = resp.json()['next']
-            path = url.replace(self.url, '')
-            resp = self.custom_endpoint(path=path)
+            resp = self._get_request(url=resp.json()['next'])
             yield resp
 
     @request_error_handler
@@ -231,7 +240,7 @@ class VectraClient(object):
     @request_error_handler
     def get_host_tags(self, host_id=None):
         """
-        Get host ags
+        Get host tags
         :param host_id:
         """
         return requests.get('{url}/tagging/host/{id}'.format(url=self.url, id=host_id), headers=self.headers,
@@ -312,9 +321,7 @@ class VectraClient(object):
         resp = self.get_detections(**kwargs)
         yield resp
         while resp.json()['next']:
-            url = resp.json()['next']
-            path = url.replace(self.url, '')
-            resp = self.custom_endpoint(path=path)
+            resp = self._get_request(url = resp.json()['next'])
             yield resp
 
     @request_error_handler
@@ -398,12 +405,10 @@ class VectraClient(object):
         """
         Generator to retrieve all rules page by page
         """
-        resp = self.get_rules()
+        resp = self._get_request(url = '{url}/rules'.format(url=self.url))
         yield resp
         while resp.json()['next']:
-            url = resp.json()['next']
-            path = url.replace(self.url, '')
-            resp = self.custom_endpoint(path=path)
+            resp = self._get_request(url = resp.json()['next'])
             yield resp
 
     @validate_api_v2
@@ -522,7 +527,7 @@ class VectraClient(object):
         return requests.delete('{url}/rules/{id}'.format(url=self.url, id=rule_id), headers=self.headers, params=params,
                                verify=self.verify)
 
-        @validate_api_v2
+    @validate_api_v2
     @request_error_handler
     def get_group_by_id(self, group_id):
         """
@@ -534,11 +539,13 @@ class VectraClient(object):
     @validate_api_v2
     def get_all_groups(self):
         """
-        Get all existing get_all_groups
-        Groups do not implement pagination
-        For consistency's sake, we still implement a generator
+        Generator to retrieve all Groups page by page
         """
-        yield requests.get('{url}/groups'.format(url=self.url), headers=self.headers, verify=False)
+        resp = self._get_request(url = '{url}/groups'.format(url=self.url))
+        yield resp
+        while resp.json()['next']:
+            resp = self._get_request(url = resp.json()['next'])
+            yield resp
 
     @validate_api_v2
     def get_groups_by_name(self, name=None, description=None):
@@ -550,13 +557,13 @@ class VectraClient(object):
         """
         groups = []
         for page in self.get_all_groups():
-            for group in page.json():
+            for group in page.json()['results']:
                 if group['name'] is not None and group['name'] == name:
                     groups.append(group)
                 elif group['description'] is not None and group['description'] == description:
                     groups.append(group)
         return groups
-    
+
     @validate_api_v2
     @request_error_handler
     def create_group(self, name=None, description='', type='host', members=[], rules=[], **kwargs):
@@ -772,7 +779,6 @@ class VectraClient(object):
                              files={'file': open(stix_file)}, verify=self.verify)
 
     @validate_api_v2
-    @request_error_handler
     def advanced_search(self, stype=None, page_size=50, query=None):
         """
         Advanced search
@@ -783,20 +789,11 @@ class VectraClient(object):
         """
         if stype not in ["hosts", "detections"]:
             raise ValueError("Supported values for stype are hosts or detections")
-        return requests.get('{url}/search/{stype}/?page_size={ps}&query_string={query}'.format(url=self.url, stype=stype,
-                                                ps=page_size, query=query),
-                            headers=self.headers, verify=self.verify)
 
-    @request_error_handler
-    def custom_endpoint(self, path=None, **kwargs):
-        if not str(path).startswith('/'):
-            path = '/' + str(path)
-
-        params = {}
-        for k, v in kwargs.items():
-            params[k] = v
-
-        if self.version == 2:
-            return requests.get(self.url + path, headers=self.headers, params=params, verify=self.verify)
-        else:
-            return requests.get(self.url + path, auth=self.auth, params=params, verify=self.verify)
+        url = '{url}/search/{stype}/?page_size={ps}&query_string={query}'.format(url=self.url, stype=stype,
+                                                ps=page_size, query=query)
+        resp = self._get_request(url=url)
+        yield resp
+        while resp.json()['next']:
+            resp = self._get_request(url=resp.json()['next'])
+            yield resp
